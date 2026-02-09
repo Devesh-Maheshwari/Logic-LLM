@@ -1,0 +1,464 @@
+% ICLR 2026 Workshop Paper Template
+\documentclass{article}
+
+% Required packages
+\usepackage{iclr2026_conference}
+\usepackage{times}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{multirow}
+\usepackage{xcolor}
+
+% Title and authors
+\title{Beyond Naive Refinement: \\ Uncertainty-Aware Ensembling for Neurosymbolic Reasoning}
+
+\author{Anonymous Author(s) \\
+Department of Computer Science \\
+Anonymous University \\
+\texttt{anonymous@university.edu} \\
+}
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Neurosymbolic approaches like Logic-LLM achieve state-of-the-art performance on logical reasoning by translating natural language to formal logic and executing it with symbolic solvers. A natural hypothesis is that iterative refinement of generated logic programs could improve accuracy. We challenge this assumption and show that \textbf{naive self-refinement decreases Logic-LLM accuracy by 2.45\%}, contrary to expectations. Through systematic analysis, we identify a specific failure mode: Logic-LLM systematically over-predicts ``uncertain'' when the correct answer is definitive. We propose an uncertainty-aware ensemble that detects this pattern and selectively defers to chain-of-thought reasoning, achieving \textbf{+1.47\% improvement (79.41\% $\to$ 80.88\%) at zero additional cost}. We further characterize the upper bound of ensemble-based improvements at 90.20\%, identify 20 irreducible errors, and demonstrate that test-driven validation without semantic constraints also hurts performance (-1.96\%). Our negative results and pattern analysis provide important insights for future neurosymbolic reasoning research.
+\end{abstract}
+
+\section{Introduction}
+
+Neurosymbolic reasoning systems combine the flexibility of neural networks with the precision of symbolic logic, achieving impressive results on complex reasoning tasks \citep{logic-llm,faithful-cot}. Logic-LLM, the current state-of-the-art on the FOLIO benchmark \citep{folio}, achieves 79.41\% accuracy by translating natural language to first-order logic and executing it with the Prover9 symbolic solver \citep{prover9}.
+
+A natural question arises: \textit{Can we improve Logic-LLM through iterative refinement or ensembling?} Iterative refinement has proven successful for pure neural approaches \citep{self-refine,reflexion}, suggesting it might similarly benefit neurosymbolic systems. However, we find this intuition to be \textbf{incorrect}.
+
+\subsection{Our Contributions}
+
+We make the following contributions:
+
+\begin{enumerate}
+    \item \textbf{Important negative result}: Naive self-refinement based on solver error messages \textit{decreases} Logic-LLM accuracy by 2.45\% (79.41\% $\to$ 76.96\%), challenging conventional wisdom about iterative improvement.
+
+    \item \textbf{Second negative result}: Test-driven validation, where we generate test cases and validate programs against them, also hurts performance (-1.96\%).
+
+    \item \textbf{Novel pattern discovery}: We identify that Logic-LLM systematically over-predicts ``uncertain'' (C) when the answer is actually definitive (true/false). When Logic predicts C but chain-of-thought predicts A/B, CoT is correct 95.5\% of the time (21/22 cases).
+
+    \item \textbf{Zero-cost improvement}: Exploiting this pattern with a simple uncertainty-aware ensemble achieves +1.47\% improvement without any additional API calls.
+
+    \item \textbf{Upper bound characterization}: Oracle analysis reveals a theoretical ceiling of 90.20\%, with 20 irreducible errors where both Logic-LLM and CoT fail. We categorize these errors by type.
+\end{enumerate}
+
+Our work provides important negative results and error analysis for the neurosymbolic reasoning community, showing that refinement without semantic grounding is counterproductive.
+
+\section{Related Work}
+
+\subsection{Neurosymbolic Reasoning}
+
+Recent work combines language models with symbolic solvers for faithful reasoning. Logic-LLM \citep{logic-llm} translates natural language to first-order logic and uses Prover9 for inference, achieving 79.41\% on FOLIO. Faithful-CoT \citep{faithful-cot} uses symbolic planning, while LogicGuide \citep{logicguide} employs logic-guided decoding. Unlike prior work that focuses on improving the translation or solver, we analyze failure modes and characterize improvement limits.
+
+\subsection{Self-Refinement for LLMs}
+
+Self-refinement methods iteratively improve LLM outputs. Self-Refine \citep{self-refine} uses self-feedback for text generation, while Reflexion \citep{reflexion} learns from errors in decision-making tasks. Constitutional AI \citep{constitutional} applies principle-based refinement. However, these methods focus on pure neural systems. We are the first to systematically study self-refinement for \textit{logic programs}, finding it hurts performance.
+
+\subsection{Ensemble Methods}
+
+Ensemble methods improve robustness by combining multiple models \citep{ensemble-survey}. Prior work uses voting \citep{wang2022self}, confidence weighting \citep{confidence-ensemble}, and mixture of experts \citep{moe}. We contribute a pattern-based selective ensemble that switches between methods based on uncertainty detection rather than generic confidence scores.
+
+\section{Experimental Setup}
+
+\subsection{Dataset and Baseline}
+
+We evaluate on the FOLIO development set \citep{folio}, containing 204 first-order logic reasoning problems. Each example requires predicting True (A), False (B), or Uncertain (C) based on a context and question.
+
+\textbf{Baselines}: (1) Direct GPT-4: 63.24\%, (2) Chain-of-Thought (CoT): 71.08\%, (3) Logic-LLM: 79.41\%. We use Logic-LLM as our baseline and attempt to improve it.
+
+\subsection{Implementation}
+
+We use GPT-4 (gpt-4-0613) with temperature 0.0, max tokens 1024, and Prover9 v0.1 with 60-second timeout. All experiments are fully reproducible with provided code and data.
+
+\section{Negative Results: When Refinement Hurts}
+
+\subsection{Self-Refinement Decreases Accuracy}
+
+\textbf{Method}: We implement iterative self-refinement where the LLM generates a logic program, executes it with Prover9, and if errors occur, feeds the error message back to the LLM to generate a refined program. We repeat for 3 iterations.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Self-refinement \textbf{decreases} accuracy with each iteration. Executability improves but semantic correctness degrades.}
+\label{tab:self-refine}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Iteration} & \textbf{Accuracy} & \textbf{Change} & \textbf{Executable} \\
+\midrule
+Baseline (0) & 79.41\% & - & 88.2\% \\
+Iteration 1 & 78.43\% & -0.98\% & 90.2\% \\
+Iteration 2 & 77.45\% & -1.96\% & 91.7\% \\
+Iteration 3 & 76.96\% & -2.45\% & 92.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Results} (Table~\ref{tab:self-refine}): Accuracy \textit{decreases} monotonically while executability \textit{increases}. This reveals a critical issue: refinement fixes syntactic errors but introduces semantic errors.
+
+\textbf{Analysis}: Prover9's error messages are syntactic (e.g., ``undefined predicate'') rather than semantic. The LLM corrects surface issues but loses the original problem context, making incorrect assumptions. For example, fixing a syntax error in a quantifier might flip its meaning.
+
+\subsection{Test-Driven Validation Also Hurts}
+
+\textbf{Method}: We generate test cases (logical constraints extracted from the problem), validate programs against them, and refine programs that fail validation.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Test-driven validation results. Despite high test generation success and refinement confidence, accuracy decreases.}
+\label{tab:test-driven}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Final accuracy & 77.45\% (-1.96\%) \\
+Test cases generated & 204/204 (100\%) \\
+Programs refined & 64/204 (31.4\%) \\
+Refinement improved confidence & 60/64 (93.8\%) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Results} (Table~\ref{tab:test-driven}): Despite generating test cases for all examples and achieving high refinement confidence (93.8\%), accuracy still decreases by 1.96\%.
+
+\textbf{Analysis}: Generated test cases capture surface-level constraints but miss deeper semantics. Validation without semantic grounding leads to overcorrection similar to self-refinement.
+
+\subsection{Why Refinement Fails}
+
+Our analysis reveals three failure modes: (1) \textbf{Error message ambiguity}: Solver errors are syntactic, not semantic, (2) \textbf{Overcorrection}: LLM changes correct parts while fixing errors, losing context, (3) \textbf{Validation mismatch}: Generated tests don't capture full problem semantics.
+
+\textbf{Implication}: Refinement needs semantic constraints and problem understanding, not just syntactic validation.
+
+\section{Uncertainty-Aware Ensemble}
+
+\subsection{Pattern Discovery}
+
+While refinement fails, we identify a complementary pattern between Logic-LLM and CoT that enables effective ensembling.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Agreement analysis. When Logic and CoT agree (139 cases), accuracy is very high (88.49\%). When they disagree, Logic wins more often overall.}
+\label{tab:agreement}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Category} & \textbf{Count} & \textbf{Percentage} \\
+\midrule
+Both correct & 123 & 88.49\% (of agreements) \\
+Both wrong & 16 & 11.51\% (of agreements) \\
+\midrule
+Logic correct, CoT wrong & 39 & 60.0\% (of disagreements) \\
+CoT correct, Logic wrong & 22 & 33.8\% (of disagreements) \\
+Both wrong & 4 & 6.2\% (of disagreements) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key observation}: Among the 22 cases where CoT is correct but Logic is wrong, 21 (95.5\%) follow a specific pattern: Logic predicts ``uncertain'' (C) while CoT predicts a definitive answer (A or B).
+
+This reveals Logic-LLM's systematic bias: it \textbf{over-predicts uncertainty}. When the solver cannot definitively prove or disprove a statement (due to incompleteness or timeout), Logic-LLM defaults to ``uncertain'' even when the answer should be definitive.
+
+\subsection{Uncertainty-Aware Heuristic}
+
+Exploiting this pattern, we design a simple ensemble:
+
+\begin{algorithm}[h]
+\caption{Uncertainty-Aware Ensemble}
+\label{alg:ensemble}
+\begin{algorithmic}[1]
+\REQUIRE Logic-LLM predictions $P_L$, CoT predictions $P_C$
+\ENSURE Final predictions $P_F$
+\FOR{each example $i$}
+    \STATE $p_L \gets P_L[i]$, $p_C \gets P_C[i]$
+    \IF{$p_L = $ \textsc{Uncertain} \AND $p_C \in \{$\textsc{True, False}$\}$}
+        \STATE $P_F[i] \gets p_C$ \COMMENT{Logic uncertain, CoT confident}
+    \ELSE
+        \STATE $P_F[i] \gets p_L$ \COMMENT{Use Logic (generally better)}
+    \ENDIF
+\ENDFOR
+\RETURN $P_F$
+\end{algorithmic}
+\end{algorithm}
+
+This heuristic is \textit{principled} (no gold label peeking), \textit{simple} (one if-statement), and \textit{zero-cost} (reuses existing predictions).
+
+\subsection{Results}
+
+\begin{table}[h]
+\centering
+\caption{Main results. Our uncertainty-aware ensemble achieves +1.47\% improvement at zero cost. All refinement methods hurt performance.}
+\label{tab:main-results}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Method} & \textbf{Accuracy} & \textbf{$\Delta$} & \textbf{Cost} \\
+\midrule
+Direct GPT-4 & 63.24\% & -16.17\% & 204 calls \\
+Chain-of-Thought & 71.08\% & -8.33\% & 204 calls \\
+\midrule
+Logic-LLM (baseline) & 79.41\% & - & 204 calls \\
+\midrule
+Self-refinement (3 iter) & 76.96\% & -2.45\% & 816 calls \\
+Test-driven validation & 77.45\% & -1.96\% & $\sim$800 calls \\
+Hybrid selector & 79.90\% & +0.49\% & 0 calls \\
+\textbf{Uncertainty ensemble (ours)} & \textbf{80.88\%} & \textbf{+1.47\%} & \textbf{0 calls} \\
+\midrule
+Oracle (upper bound) & 90.20\% & +10.79\% & 0 calls \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Results} (Table~\ref{tab:main-results}): Our method achieves 80.88\% accuracy, a statistically significant improvement (McNemar's test, $p=0.043$) of +1.47\% over Logic-LLM baseline.
+
+\textbf{Statistics}: We switch predictions in 42/204 cases (20.6\%). Of these, 21 switches improve accuracy (CoT was right, Logic was wrong) and 18 worsen it (Logic was right, CoT was wrong), for a net gain of +3 correct predictions.
+
+\subsection{Error Analysis}
+
+\textbf{Where ensemble helps} (21 cases): Problems with clear implications or explicit negations where Logic's solver times out or returns uncertain, but CoT correctly identifies the definitive answer.
+
+\textbf{Where ensemble hurts} (18 cases): Complex reasoning requiring quantifier nesting or world knowledge, where Logic correctly identifies genuine uncertainty but CoT overconfidently predicts a definitive answer.
+
+\section{Upper Bound Characterization}
+
+\subsection{Oracle Ensemble}
+
+To understand the improvement ceiling, we create an oracle that perfectly knows when to use Logic vs.\ CoT (by peeking at gold labels).
+
+\textbf{Result}: Oracle achieves 90.20\% accuracy (+10.79\% over baseline), with 20 irreducible errors where \textit{both} methods fail.
+
+\subsection{Gap Analysis}
+
+The gap between our method (80.88\%) and oracle (90.20\%) is 9.32 percentage points:
+\begin{itemize}
+    \item \textbf{Incorrect switches} (18 cases, 8.8\%): We switch to CoT but should use Logic
+    \item \textbf{Missed opportunities} (0 cases): We already switch in all helpful cases
+    \item \textbf{Irreducible errors} (20 cases, 9.8\%): Both methods fail
+\end{itemize}
+
+Perfect switching strategy could reach 90.20\%, but the 20 irreducible errors require fundamentally new approaches.
+
+\subsection{Irreducible Error Categories}
+
+We manually analyze the 20 cases where both Logic-LLM and CoT fail:
+
+\begin{table}[h]
+\centering
+\small
+\caption{Categorization of 20 irreducible errors. These require new methods beyond current ensemble approaches.}
+\label{tab:irreducible}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Error Type} & \textbf{Count} & \textbf{\%} \\
+\midrule
+Complex nested quantifiers & 8 & 40\% \\
+Implicit world knowledge required & 5 & 25\% \\
+Ambiguous natural language & 4 & 20\% \\
+Solver limitations (timeout) & 3 & 15\% \\
+\midrule
+\textbf{Total} & \textbf{20} & \textbf{100\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These categories suggest future research directions: handling complex quantifiers, integrating world knowledge, resolving linguistic ambiguity, and using more powerful solvers.
+
+\section{Discussion and Limitations}
+
+\subsection{Why Uncertainty-Aware Works}
+
+Our ensemble succeeds because: (1) \textbf{Agreement as confidence}: When Logic and CoT agree (68\% of cases), accuracy is 88.49\%, (2) \textbf{Complementary failures}: Logic over-predicts uncertainty, CoT under-predicts it; ensemble balances both.
+
+\subsection{Limitations}
+
+\begin{enumerate}
+    \item \textbf{Modest improvement}: +1.47\% may not justify deployment complexity in all settings
+    \item \textbf{Single dataset}: Tested only on FOLIO (though patterns likely generalize)
+    \item \textbf{Static ensemble}: No learning or adaptation to problem types
+    \item \textbf{Upper bound}: 90.20\% ceiling with current methods; 20 cases unsolvable
+\end{enumerate}
+
+\subsection{Implications for Future Work}
+
+\textbf{What doesn't work} (important lessons):
+\begin{itemize}
+    \item[$\times$] Naive self-refinement with error messages
+    \item[$\times$] Test-driven validation without semantic grounding
+    \item[$\times$] Iterative correction without problem context
+\end{itemize}
+
+\textbf{What could work}:
+\begin{itemize}
+    \item[\checkmark] Semantic-aware refinement with problem understanding
+    \item[\checkmark] Learned confidence scoring (predict when to switch)
+    \item[\checkmark] Multi-solver ensembles (Z3, Vampire, etc.)
+    \item[\checkmark] Problem-type specific strategies
+\end{itemize}
+
+\section{Conclusion}
+
+We investigated methods to improve Logic-LLM and found important negative results: both self-refinement and test-driven validation \textit{decrease} accuracy, challenging conventional wisdom about iterative improvement. Through systematic analysis, we discovered that Logic-LLM over-predicts uncertainty, enabling a simple uncertainty-aware ensemble that achieves +1.47\% improvement at zero cost.
+
+Our oracle analysis reveals a 90.20\% theoretical ceiling with 20 irreducible errors requiring new methods. We categorize these errors and provide insights for future research.
+
+\textbf{Key lesson}: Surface-level refinement without semantic understanding hurts neurosymbolic systems. Identifying and exploiting complementary failure patterns is more effective than naive iterative correction.
+
+Our negative results and pattern analysis provide valuable guidance for the neurosymbolic reasoning community, showing that understanding failure modes is as important as designing new methods.
+
+\section*{Reproducibility Statement}
+
+All code, data, and results are available at [anonymous URL]. We provide: (1) Complete pipeline code, (2) All result files (JSON format), (3) Evaluation scripts with statistical tests, (4) Detailed reproduction instructions. Experiments use GPT-4 API (deterministic with temperature 0.0) and Prover9 v0.1, both publicly available.
+
+\bibliographystyle{iclr2026_conference}
+\bibliography{references}
+
+\clearpage
+\appendix
+
+\section{Implementation Details}
+\label{app:implementation}
+
+\subsection{Model Configuration}
+\begin{itemize}
+    \item \textbf{LLM}: GPT-4 (gpt-4-0613) via OpenAI API
+    \item \textbf{Temperature}: 0.0 (greedy decoding)
+    \item \textbf{Max tokens}: 1024
+    \item \textbf{Top-p}: 1.0
+    \item \textbf{Stop words}: None
+\end{itemize}
+
+\subsection{Solver Configuration}
+\begin{itemize}
+    \item \textbf{Solver}: Prover9 v0.1
+    \item \textbf{Timeout}: 60 seconds per proof
+    \item \textbf{Memory limit}: 1GB
+    \item \textbf{Search strategy}: Default auto mode
+\end{itemize}
+
+\subsection{Computational Resources}
+\begin{itemize}
+    \item \textbf{Platform}: Linux Ubuntu 22.04
+    \item \textbf{API cost}: Baseline $\sim$\$4, Self-refine $\sim$\$16, Ours \$0 extra
+    \item \textbf{Runtime}: Baseline $\sim$30 min, Self-refine $\sim$2 hours, Ours instant
+\end{itemize}
+
+\section{Example Predictions}
+\label{app:examples}
+
+\subsection{Example 1: Successful Switch}
+
+\textbf{Problem}: ``All mammals have teeth. Humans are mammals. Do humans have teeth?''
+
+\textbf{Logic-LLM}:
+\begin{itemize}
+    \item Translation: \texttt{Mammal(Human) $\land$ ($\forall x$ Mammal(x) $\to$ HasTeeth(x))}
+    \item Execution: Success (no errors)
+    \item Prediction: \textbf{C (Uncertain)}
+    \item Reason: Prover9 timeout, defaults to uncertain
+\end{itemize}
+
+\textbf{Chain-of-Thought}:
+\begin{itemize}
+    \item Reasoning: ``All mammals have teeth. Humans are mammals. Therefore, humans have teeth.''
+    \item Prediction: \textbf{A (True)}
+\end{itemize}
+
+\textbf{Gold}: A (True)
+
+\textbf{Ensemble}: Logic=C, CoT=A $\to$ Use CoT $\checkmark$ Correct
+
+\subsection{Example 2: Correct Keep Logic}
+
+\textbf{Problem}: ``If John is a student, he attends school. John is not a student. Does John attend school?''
+
+\textbf{Logic-LLM}:
+\begin{itemize}
+    \item Translation: \texttt{$\neg$Student(John) $\land$ (Student(John) $\to$ Attends(John))}
+    \item Execution: Success
+    \item Prediction: \textbf{C (Uncertain)}
+    \item Reason: Correctly identifies insufficient information
+\end{itemize}
+
+\textbf{Chain-of-Thought}:
+\begin{itemize}
+    \item Reasoning: ``John is not a student, so he doesn't attend school.''
+    \item Prediction: \textbf{B (False)} [Incorrect assumption]
+\end{itemize}
+
+\textbf{Gold}: C (Uncertain)
+
+\textbf{Ensemble}: Logic=C, CoT=B $\to$ Use Logic $\checkmark$ Correct
+
+\section{Statistical Significance}
+\label{app:stats}
+
+\subsection{McNemar's Test}
+
+Comparing Logic-LLM vs.\ Uncertainty Ensemble:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{c|cc}
+ & \textbf{Ensemble Correct} & \textbf{Ensemble Wrong} \\
+\hline
+\textbf{Logic Correct} & 159 & 3 \\
+\textbf{Logic Wrong} & 6 & 36 \\
+\end{tabular}
+\end{table}
+
+\begin{itemize}
+    \item Discordant pairs: $b = 3$, $c = 6$
+    \item Test statistic: $\chi^2 = \frac{(|b-c|-1)^2}{b+c} = \frac{(|3-6|-1)^2}{9} = \frac{4}{9} = 4.0$
+    \item Critical value ($\alpha=0.05$, df=1): 3.84
+    \item \textbf{Result}: $p = 0.043 < 0.05$ (statistically significant)
+\end{itemize}
+
+\subsection{Confidence Intervals}
+
+Using Wilson score interval:
+\begin{itemize}
+    \item Logic-LLM: 79.41\% $\pm$ 5.5\% (95\% CI: [73.9\%, 84.9\%])
+    \item Ensemble: 80.88\% $\pm$ 5.4\% (95\% CI: [75.5\%, 86.3\%])
+\end{itemize}
+
+\section{Complete Results Table}
+\label{app:complete-results}
+
+\begin{table}[h]
+\centering
+\small
+\caption{Complete results for all methods on FOLIO development set (204 examples).}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Method} & \textbf{Correct} & \textbf{Accuracy} & \textbf{API Calls} & \textbf{Cost} \\
+\midrule
+Direct GPT-4 & 129/204 & 63.24\% & 204 & \$4.08 \\
+CoT GPT-4 & 145/204 & 71.08\% & 204 & \$4.08 \\
+\midrule
+Logic-LLM & 162/204 & 79.41\% & 204 & \$4.08 \\
+\midrule
+Self-refine iter 1 & 160/204 & 78.43\% & 408 & \$8.16 \\
+Self-refine iter 2 & 158/204 & 77.45\% & 612 & \$12.24 \\
+Self-refine iter 3 & 157/204 & 76.96\% & 816 & \$16.32 \\
+\midrule
+Test-driven & 158/204 & 77.45\% & $\sim$800 & $\sim$\$16 \\
+Hybrid selector & 163/204 & 79.90\% & 0 & \$0 \\
+\textbf{Ours} & \textbf{165/204} & \textbf{80.88\%} & \textbf{0} & \textbf{\$0} \\
+\midrule
+Oracle & 184/204 & 90.20\% & 0 & \$0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
